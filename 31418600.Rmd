@@ -1,0 +1,514 @@
+---
+title: "Retail Forecasting Project"
+author: "ETC5550: Aryan Jain"
+output:
+  bookdown::html_document2:
+    fig_height: 5
+    fig_width: 8
+    toc: yes
+    toc_float:
+      collapsed: false
+    number_sections: false
+    code_folding: show
+    theme: readable
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, Loading-libraries}
+library(fpp3)
+theme_set(theme_minimal())
+library(kableExtra)
+```
+
+# Introduction
+
+The dataset is about Clothing retail turnover in ACT, Australia over a period of 35 years. We will be:
+
+-   Exploring statistical features of the dataset,
+
+-   Fitting a range of ETS and ARIMA models to on training data,
+
+-   Performing necessary transformations on the data and maximizing test accuracy,
+
+-   Pitting our best ETS and ARIMA model against each other,
+
+-   Producing forecast for real time Clothing retain turnover data.
+
+```{r}
+set.seed(31418600)
+myseries <- aus_retail %>%
+  filter(
+    `Series ID` == sample(aus_retail$`Series ID`,1),
+    Month < yearmonth("2018 Jan")
+  )
+```
+
+**Let's take a look at the Time-series**
+
+```{r}
+myseries %>% 
+  autoplot(Turnover) +
+  labs(x = "",
+       y = "Turnover in Millions (AUD)",
+       title = "Clothing retailing in ACT")
+```
+
+# Statistical Features
+
+------------------------------------------------------------------------
+
+## Seasonality
+
+```{r}
+myseries %>% 
+  model(stl = STL(Turnover ~ trend(window = 29))) %>% 
+  components() %>% 
+  select(season_year) %>% 
+  autoplot() +
+  labs(title = "Clothing retailing in ACT - Seasonality", x = '', y = 'Turnover in Millions (AUD)')
+```
+
+> It can be observed that as the level increases, the homogenity of variance also decreases which results in a funnel shaped scatter. This suggests the presence of a multiplicative seasonal pattern.
+
+```{r}
+myseries %>% gg_season(Turnover, labels = "both") +
+    labs(x = "",
+         y = "Turnover in Millions (AUD)",
+       title = "Clothing retailing in ACT - Seasonality")
+```
+
+> The plot above confirms the effect of seasonality on the turnover as the pattern is identical throughout the given time period. It can be observed that the turnover peaks at the end of the year capping in december which could a Christmas effect. August sales seems to be deminishing over time. An unusually high may turnover can also be observed in 2009.
+
+## Trend
+
+```{r}
+myseries %>% 
+  model(stl = STL(Turnover ~ trend(window = 29))) %>% 
+  components() %>% 
+  select(trend) %>% 
+  autoplot() +
+  labs(title = "Clothing retailing in ACT - Trend",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> It can be observed that the time series has an increasing additive trend with it reaching its peak somewhere in 2008-2009 and then facing a sizeable plummet (could be due to the Great Recession) before starting another upward trend.
+
+**Looking at the seasonal effect on trend**
+
+```{r}
+myseries %>% gg_subseries(Turnover)  +
+  labs(y = "Turnover in Millions (AUD)",
+       x = "",
+       title = "Clothing retailing in ACT - Trend")
+```
+
+> It can be observed from the plot above that there is a strong trend in all months of the time series dataset, with the largest trend in December. May and June sees the largest increase after december compared to other months.
+
+## Remainder
+
+```{r}
+myseries %>% 
+  model(stl = STL(Turnover ~ trend(window = 29))) %>% 
+  components() %>% 
+  select(remainder) %>% 
+  autoplot() +
+  labs(title = "Clothing retailing in ACT - Remainder",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> The plot above denotes that the variance in generally trend increases with increase in level, although the pattern seems to break a little around the great recession (2008-2010), it still seems to follow a multiplicative pattern just as the seasonal component.
+
+# Models
+
+------------------------------------------------------------------------
+
+## ETS
+
+> After the analysis of the statistical component of the time-series in the previous section, it could be concluded that ETS(MAM) would best fit the data with its additive trend and multiplicative error and seasonility components.
+>
+> We will fit two additional ETS models, including ETS(MNM) and ETS(MAdM) to compare their performance with our original model.
+>
+> We will also fit two STL decomposition model on the seasonally adjusted data and compare them to our best performers.
+
+### Fitting the Model
+
+```{r}
+stlets <- decomposition_model(
+  STL(Turnover),
+  ETS(season_adjust ~ error("M") + trend("A") + season("N")))
+
+stletsdamped <- decomposition_model(
+  STL(Turnover),
+  ETS(season_adjust ~ error("M") + trend("Ad") + season("N")))
+  
+# fitting the model on training data
+fit <- myseries %>%
+  filter(Month <= max(Month) - 24) %>%
+  model(
+    MAM = ETS(Turnover ~ error("M") + trend("A") + season("M")),
+    MNM = ETS(Turnover ~ error("M") + trend("N") + season("M")),
+    MAdM = ETS(Turnover ~ error("M") + trend("Ad") + season("M")),
+    stl_MAN = stlets,
+    stl_MAdN = stletsdamped
+    )
+
+# Forecasting for the test period
+fbl <- fit %>%
+  forecast(h = 24)
+
+# Visualizing test data with our model forecasts
+fbl%>%
+  autoplot(myseries, level = NULL) + 
+  labs(title = "Clothing retailing in ACT - Forecasts (ETS)",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> Providently, all the models perform similarly and produce forecasts that are inline with the test dataset.
+
+### Model Diagnostics
+
+**Training Accuracy**
+
+```{r}
+# model accuracy
+fit %>%
+  select(-stl_MAN, -stl_MAdN) %>% 
+  glance() %>%
+  select(.model, AIC, AICc) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> Unsurprisingly, ETS(MAM) gives the most favourable AIC and AICc measures followed by ETS(MAdm) with ETS(MNM) performing the worst.
+
+*Comparing the STL decomposition model forecast accuracy*
+
+```{r}
+# train accuracy (in-sample)
+accuracy(fit) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> The results get interesting here as the two STL decomposition models beat the training accuracy of our best fitting models.
+
+**Test Accuracy**
+
+```{r}
+# test accuracy (out-of-sample)
+accuracy(fbl, myseries) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> In test accuracy measures, ETS(MNM) model performs best even though it appears to be an additive trend time series. The reason for that could be that for our test period (2016-2017), the trend is quite dull and appeares to be almost non-existent and hence the ETS(MNM) model produces forecasts that are more in line with the test data.
+>
+> Although the test accuracy results suggest ETS(MNM) to be the better model, I would still choose STL decomposed ETS(MAdM) as my best model as it wouldn't be wise to ignore the clear additive trend of the time series for future forecasts and Turnover would likely go up with the ever increasing population. Picking the damped additive trend model would be safer as the trend seems to be somewhat diminishing towards the end.
+
+**Residual Diagnostics**
+
+```{r}
+fit %>% 
+  select(stl_MAdN) %>% 
+  gg_tsresiduals() +
+  labs(title = "Clothing retailing in ACT - Residual (ETS)",
+       x = '')
+```
+
+> Looking at the residual plot above, we can see some spikes at lag 1 and lag 24. However, these spikes doesn't seem to be too significant and the histogram also looks very close to a normal distribution. Although it can be observed that the right tail is longer which might suggest that the residuals aren't perfectly remembling white noise.
+
+*An Ljung-box test is not possible for STL decomposed model*
+
+**Plotting the best model**
+
+```{r}
+fit %>%
+  forecast(h = 24) %>%
+  filter(.model == 'stl_MAdN') %>%
+  autoplot(myseries) +
+  labs(title = "Clothing retailing in ACT - Final Forecast (ETS)",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+## ARIMA
+
+> As already discussed, the time-series has both trend and seasonal components which means it is non-stationary.
+
+```{r}
+myseries %>% 
+  gg_tsdisplay(Turnover, plot_type = "partial") +
+  labs(title = "Clothing retailing in ACT - ACF | PACF",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> -   The time-series graph clearly shows that the level and variance of the time-series is time dependent.
+>
+> -   ACF does not drop to zero and the r~1~ is large and positive
+>
+> -   PACF value r~1~ is also quite large and positive
+
+All these things suggest that the series is non-stationary and differencing should be done to obtain a stationary series.
+
+### Transformation
+
+> A log transformation will be done in an attempt to combat the effect of multiplative seasonility and make the time series homoscedastic.
+
+```{r}
+myseries %>% 
+  autoplot(log(Turnover)) +
+  labs(title = "Clothing retailing in ACT - Log Transformed",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> The resulting graph shows the time series is quite consistent in variance. However we will do guerrero method to compute the lambda to make further inferences.
+
+```{r}
+myseries %>% 
+  features(Turnover, features = guerrero) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> As the lambda value is quite close to 0, sticking with the log transformation would be much simpler and a box-cox transformation can be avoided.
+
+### Differencing
+
+```{r}
+myseries %>%
+  mutate(log_turnover = log(Turnover)) %>%
+  features(log_turnover, features = list(unitroot_kpss, unitroot_nsdiffs)) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> -   Uniroot_kpss produces a very low p-value which means we can reject the hypothesis that the data is stationary.
+>
+> -   Uniroot_nsdiffs suggests that a seasonal differencing should be done to the dataset
+
+These findings are inline with our understandings, as the series clearly showcase seasonality which should be removed with a differencing of lag 12 for the monthly data.
+
+```{r}
+myseries %>% 
+  gg_tsdisplay(difference(log(Turnover), lag = 12), plot_type = "partial") +
+  labs(title = "Clothing retailing in ACT - Transformed - ACF | PACF",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> The time series appear to be fairly stationary at this stage. However there is still some ambiguity.
+>
+> -   Looking at the ACF, one could argue that the lag spikes are not decreasing quickly enough.
+>
+> -   And the PACF plot shows a somewhat significant first spike which could suggest non-stationarity.
+
+To combat this lack of certainty, we can do the unitroot_kpss and unitroot_ndiffs tests again to see if we still need to difference the data.
+
+```{r}
+myseries %>%
+  mutate(log_turnover = difference(log(Turnover), 12)) %>%
+  features(log_turnover, features = list(unitroot_kpss, unitroot_ndiffs)) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> Both the unitroot_ndiffs test and significant p-value of unit_kpss test suggests that the data is stationary and no more differencing needs to be done.
+
+We will consider the data to be stationary at this point.
+
+### Fitting the Model
+
+```{r}
+myseries %>% 
+  gg_tsdisplay(difference(log(Turnover), lag = 12), plot_type = "partial", lag = 60) +
+  labs(title = "Clothing retailing in ACT - Transformed - ACF | PACF - 5 Years lag",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> Because we are doing 1 seasonal differencing, we should always include a constant or our prediction will be a non-zero constant (aka flatline).
+
+> Also, since, the ACF plot is too complicated, we'll look at the PCAF plot to make our model choices.
+>
+> -   The last non-seasonal lag that we will consider is 3 as values beyond 6 are too far out.
+>
+> -   We'll consider lag 12, 24 and 36 for non-seasonal lags as beyond that the lags are insignificant.
+
+```{r}
+fit_arima <- myseries %>%
+  filter(Month <= max(Month) - 24) %>% 
+  model(autoarima = ARIMA(log(Turnover)),
+        arima300410 = ARIMA(log(Turnover) ~ 1 + pdq(3,0,0) + PDQ(4,1,0)),
+        arima300210 = ARIMA(log(Turnover) ~ 1 + pdq(3,0,0) + PDQ(2,1,0)),
+        arima300110 = ARIMA(log(Turnover) ~ 1 + pdq(3,0,0) + PDQ(1,1,0))
+        )
+  
+fbl_arima <- fit_arima %>% 
+  forecast(h = 24) 
+
+fbl_arima %>% 
+  autoplot(myseries, level = NULL) +
+  labs(title = "Clothing retailing in ACT - Forecast (ARIMA)",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+### Model Diagnostics
+
+**Training Accuracy**
+
+```{r}
+fit_arima %>% 
+  report() %>% 
+  select(.model, AIC, AICc) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+```{r}
+accuracy(fit_arima) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> The autoArima model performs best in all training accuracy measures which isn't surprising as autoArima's selection metric for the best metric is AICc.
+
+**Test Accuracy**
+
+```{r}
+accuracy(fbl_arima, myseries) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> Looking at the test accuracy gives us much more valuable information, as it actually tells us how well the model works on predicting future data. The test accuracy output tells us that the best performing model is ARIMA(3,0,0)(1,1,0)[12]
+
+**Residual Diagnostics**
+
+```{r}
+fit_arima %>% 
+  select(arima300110) %>% 
+  gg_tsresiduals() +
+  labs(title = "Clothing retailing in ACT - Residuals (ARIMA)",
+       x = '')
+```
+
+> Looking at the residuals, it's hard to conclude if they do infact resemble white noise. Even though, lag 24 is significant, however it is so far in the past, one could argue that its effect can be ignored. And, the histogram although resempling a normal distribution is slightly right skewed. A Ljung-box test can be done, to confirm our suspicions.
+
+```{r}
+fit_arima %>% 
+  select(arima300110) %>% 
+  tidy() %>% 
+  kable() %>% 
+  kable_styling()
+
+fit_arima %>% 
+  select(arima300110) %>% 
+  augment() %>%
+  features(.innov, ljung_box, lag = 36, dof = 5) %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+> We can conclude from the very low p-value that the residuals does NOT resemble white noise.
+
+**Even though, the residuals of our best model, ARIMA(3,0,0)(1,1,0)[12] does not seem to resemble white noise, it still fits the data pretty well and does a fairly good job at forecasting when compared to our test set.**
+
+## Comparison: ETS and ARIMA
+
+```{r}
+fit_final <- bind_cols(select(fit, State, Industry, stl_MAdN),
+                       select(fit_arima, arima300110))
+
+fbl_final <- fit_final %>% 
+  forecast(h = 24) 
+
+fbl_final%>% 
+  autoplot(myseries) +
+  labs(title = "Clothing retailing in ACT - Forecast (ETS V/s ARIMA)",
+       x = '',
+       y = 'Turnover in Millions (AUD)')
+```
+
+> Both models produce very accurate forecasts when compared to our test set. Visually identifying a better model wouldn't be very easy. We can do an accuracy test with our out-of-sample test data set.
+
+**Test Accuracy**
+
+```{r}
+accuracy(fbl_final, myseries) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+Although, both models produce similar results, our STL Decomposed Seasonally adjusted ETS(MAdN) model performs better on all test accuracy measures and hence would become our model of choice.
+
+# Final Output
+
+We will now producing forecast for real time Clothing retain turnover data obtained from Australian Bureau of Statistics and find out how our best models stack up against data it has never seen before.
+
+```{r}
+fit_comp <- myseries %>% 
+              model(arima300110 = ARIMA(log(Turnover) ~ 1 + pdq(3,0,0) + PDQ(1,1,0)),
+                    stl_MAdN = stletsdamped)
+
+fulldata <- readabs::read_abs("8501.0")
+
+fulldata <- fulldata %>% 
+  filter(series_id == myseries$`Series ID`) %>%
+  mutate(Month = yearmonth(date),
+         State = 'Australian Capital Territory',
+         Industry = 'Clothing retailing',
+         `Series ID` = series_id,
+         Turnover = value) %>% 
+  select(State, Industry, `Series ID`, Month, Turnover) %>% 
+  as_tsibble(key = c(State, Industry, `Series ID`), index = Month)
+                  
+
+fbl_comp <- fit_comp %>% 
+  forecast(h = "2 years") 
+
+fbl_comp%>% 
+  autoplot(myseries, level = 80) +
+  autolayer(fulldata) +
+  labs(title = "Clothing Retail Turnover in ACT - Full Forecast (ETS V/s ARIMA)",
+       y = "Turnover in Millions (AUD)",
+       x = "")
+```
+
+```{r}
+accuracy(fbl_comp, fulldata) %>% 
+  select(.model, RMSE, MAPE, MASE) %>% 
+  kable() %>%
+  kable_styling()
+```
+
+> Surprisingly, our chosen ARIMA model performs much better on data beyond 2017 when it was performing slightly worse on our previous test period. This could be because our selected ETS model had a damped additive trend which was chosen as a more conservative option. However, the new data sees a somewhat sharper upward trend which is why ARIMA is performing better. Nonetheless, the prediction interval of forecast still capture most of the new data and both models are still doing a fairly good job of predicting the Turnover.
+
+# Conclusion
+
+**ETS**
+
+Our chosen ETS model performs wonderfully on the test period 2015-2017 but drops in performance significantly in predicting ahead of 2017. It was ranked higher than autoETS and many other models in test accuracy and manages to capture the effect of seasonality and level. However its damped additive trend made it less accurate for our new test data which appears to trend upwards steeper than the previous test period. 
+
+Our STL decomposed seasonally adjusted model also couldn't be tested for AIC and AICc values and an Ljung-box was also not possible for this kind of model which meant that we couldn't definitively conclude if the residual resembled white noise or not.
+
+**ARIMA**
+
+Our chosen arima model had quite favorable training and test accuracy for all the accuracy measures. While, it failed to outperformed the autoArima model selected by the fable package in training accuracy measures such as AIC and AICc, it did beat all other models in testing accuracy. It also performed quite well on the new test data which made it our preferred model for future forecasts.
+
+The residual plot however left us with an inconclusive result, it was hard to make out if it resembled white noise. And it also failed the Ljung-box test suggesting that the residuals might have captured some trend or seasonality and doesn't completely resemble white noise.
